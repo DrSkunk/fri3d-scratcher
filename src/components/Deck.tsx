@@ -53,6 +53,65 @@ export function Deck({ side, state, mixer }: DeckProps) {
   const stepBtn =
     "rounded-md border-4 border-black bg-white px-2 py-0.5 font-display text-base font-bold leading-none shadow-hard-sm transition-transform enabled:active:translate-x-0.5 enabled:active:translate-y-0.5 enabled:active:shadow-none disabled:opacity-40";
   const accentRange = isLeft ? "accent-fri3d-purple" : "accent-fri3d-mint-dark";
+  const playPad = (
+    <Pad
+      key="play"
+      label="Play"
+      tutorialId={`play-${side}`}
+      sub={state.playing ? "playing" : "paused"}
+      active={state.playing}
+      pressed={state.padsPressed[0]}
+      onTrigger={() => mixer.togglePlay(side)}
+    />
+  );
+  const cuePad = <Pad key="cue" label="Cue" sub="to start" pressed={state.padsPressed[1]} onTrigger={() => mixer.cue(side)} />;
+  const hot1Pad = (
+    <div key="hot1" className="relative">
+      <Pad
+        label="Hot 1"
+        sub={state.hotCues[0] != null ? formatTime(state.hotCues[0]) : "set"}
+        hot={state.hotCues[0] != null}
+        pressed={state.padsPressed[2]}
+        onPress={(shift) => mixer.hotCuePress(side, 0, shift)}
+        onRelease={() => mixer.hotCueRelease(side, 0)}
+        onContext={() => mixer.hotCuePress(side, 0, true)}
+      />
+      {state.hotCues[0] != null && (
+        <button
+          type="button"
+          aria-label="Reset Hot 1"
+          onClick={() => mixer.clearHotCue(side, 0)}
+          className="absolute right-0 top-0 flex h-5 w-5 -translate-y-1 translate-x-1 items-center justify-center rounded-full border-2 border-black bg-white text-[0.6rem] font-bold shadow-hard-sm transition-transform active:translate-x-0 active:translate-y-0 active:shadow-none"
+        >
+          ×
+        </button>
+      )}
+    </div>
+  );
+  const hot2Pad = (
+    <div key="hot2" className="relative">
+      <Pad
+        label="Hot 2"
+        sub={state.hotCues[1] != null ? formatTime(state.hotCues[1]) : "set"}
+        hot={state.hotCues[1] != null}
+        pressed={state.padsPressed[3]}
+        onPress={(shift) => mixer.hotCuePress(side, 1, shift)}
+        onRelease={() => mixer.hotCueRelease(side, 1)}
+        onContext={() => mixer.hotCuePress(side, 1, true)}
+      />
+      {state.hotCues[1] != null && (
+        <button
+          type="button"
+          aria-label="Reset Hot 2"
+          onClick={() => mixer.clearHotCue(side, 1)}
+          className="absolute right-0 top-0 flex h-5 w-5 -translate-y-1 translate-x-1 items-center justify-center rounded-full border-2 border-black bg-white text-[0.6rem] font-bold shadow-hard-sm transition-transform active:translate-x-0 active:translate-y-0 active:shadow-none"
+        >
+          ×
+        </button>
+      )}
+    </div>
+  );
+  const padLayout = isLeft ? [cuePad, hot1Pad, playPad, hot2Pad] : [hot1Pad, cuePad, hot2Pad, playPad];
 
   return (
     <section className={`flex flex-col gap-4 border-8 bg-white p-5 ${borderAccent}`}>
@@ -202,29 +261,8 @@ export function Deck({ side, state, mixer }: DeckProps) {
       </div>
 
       {/* Pads */}
-      <div className="grid grid-cols-4 gap-2">
-        <div data-tutorial={`play-${side}`} className="grid">
-          <Pad label="Play" sub={state.playing ? "playing" : "paused"} active={state.playing} pressed={state.padsPressed[0]} onTrigger={() => mixer.togglePlay(side)} />
-        </div>
-        <Pad label="Cue" sub="to start" pressed={state.padsPressed[1]} onTrigger={() => mixer.cue(side)} />
-        <Pad
-          label="Hot 1"
-          sub={state.hotCues[0] != null ? formatTime(state.hotCues[0]) : "set"}
-          hot={state.hotCues[0] != null}
-          pressed={state.padsPressed[2]}
-          onPress={(shift) => mixer.hotCuePress(side, 0, shift)}
-          onRelease={() => mixer.hotCueRelease(side, 0)}
-          onContext={() => mixer.hotCuePress(side, 0, true)}
-        />
-        <Pad
-          label="Hot 2"
-          sub={state.hotCues[1] != null ? formatTime(state.hotCues[1]) : "set"}
-          hot={state.hotCues[1] != null}
-          pressed={state.padsPressed[3]}
-          onPress={(shift) => mixer.hotCuePress(side, 1, shift)}
-          onRelease={() => mixer.hotCueRelease(side, 1)}
-          onContext={() => mixer.hotCuePress(side, 1, true)}
-        />
+      <div className="grid grid-cols-2 gap-2">
+        {padLayout}
       </div>
     </section>
   );
