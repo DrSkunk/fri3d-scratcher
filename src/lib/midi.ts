@@ -29,15 +29,17 @@ export const CC = {
 
 // The 3x3 matrix exposes 8 usable buttons. Order them 0..7 the way the
 // firmware indexes them so the UI pads line up with the hardware.
+// ordered from top left to bottom right in 2 rows
+// modulo 4; 0 = play, 1 = hot 2, 2 = hot 1, 3 = cue
 export const BUTTON_CC: Record<number, number> = {
-  0x64: 0, // col 0 row 0
-  0x66: 1, // col 0 row 1
-  0x65: 2, // col 0 row 2
-  0x60: 3, // col 1 row 0
-  0x62: 4, // col 1 row 1
-  0x61: 5, // col 1 row 2
-  0x67: 6, // col 2 row 0
-  0x63: 7, // col 2 row 1
+  0x60: 3, // col 1 row 0 -- top row button 1 // deck 1 cue
+  0x61: 2, // col 1 row 2 -- top row button 2 // deck 1 hot 1
+  0x62: 6, // col 1 row 1 -- top row button 3 // deck 2 hot 1
+  0x63: 7, // col 2 row 1 -- top row button 4 // deck 2 cue
+  0x64: 0, // col 0 row 0 -- bottom row button 1 // deck 1 play
+  0x65: 1, // col 0 row 2 -- bottom row button 2 // deck 1 hot 2
+  0x66: 5, // col 0 row 1 -- bottom row button 3 // deck 2 hot 2
+  0x67: 4, // col 2 row 0 -- bottom row button 4 // deck 2 play
 };
 
 // Firmware LED palette (value sent over CC 0x20..0x27).
@@ -55,6 +57,10 @@ export const LED_COLOR = {
 } as const;
 
 const LED_CC_BASE = 0x20;
+// LED CC slots (0x20..0x27) follow the same physical matrix order as button
+// CCs (0x60..0x67), not the logical 0..7 button indices used by onButton.
+// Map logical button index -> physical LED slot.
+const LED_SLOT_FOR_BUTTON = [4, 5, 1, 0, 7, 6, 2, 3] as const;
 
 // Human-readable names for known CC numbers, for debug logging.
 const CC_NAMES: Record<number, string> = {
@@ -230,10 +236,11 @@ export class MidiController {
     if (index < 0 || index > 7) return;
     if (this.ledState[index] === color) return;
     this.ledState[index] = color;
-    this.output?.send([0xb0, LED_CC_BASE + index, color]);
+    const slot = LED_SLOT_FOR_BUTTON[index] ?? index;
+    this.output?.send([0xb0, LED_CC_BASE + slot, color]);
     if (this.debug) {
       console.log(
-        `%c[MIDI →]%c LED ${index} cc=${hex2(LED_CC_BASE + index)} color=${color}`,
+        `%c[MIDI →]%c LED ${index} slot=${slot} cc=${hex2(LED_CC_BASE + slot)} color=${color}`,
         "color:#ffad64;font-weight:bold",
         "color:inherit",
       );

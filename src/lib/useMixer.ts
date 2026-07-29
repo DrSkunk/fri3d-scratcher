@@ -87,6 +87,8 @@ export interface MixerApi {
   hotCuePress: (side: DeckSide, index: number, overwrite?: boolean) => void;
   /** Release a hot-cue pad; plays from the cue if it was parked. */
   hotCueRelease: (side: DeckSide, index: number) => void;
+  /** Clear a stored hot-cue position. */
+  clearHotCue: (side: DeckSide, index: number) => void;
   /** Seek to a fraction (0..1) of the track. */
   seek: (side: DeckSide, fraction: number) => void;
   /** Match this deck's tempo + beat phase to the other deck. */
@@ -353,6 +355,16 @@ export function useMixer(): MixerApi {
     setter((prev) => ({ ...prev, playing: deck.isPlaying }));
   }, []);
 
+  // Clear a stored hot-cue (set it to null).
+  const clearHotCue = useCallback((side: DeckSide, index: number) => {
+    const setter = side === "left" ? setLeft : setRight;
+    setter((prev) => {
+      const cues = [...prev.hotCues] as [number | null, number | null];
+      cues[index] = null;
+      return { ...prev, hotCues: cues };
+    });
+  }, []);
+
   const setEq = useCallback(
     (side: DeckSide, band: EqBand, value: number) => {
       const engine = ensureEngine();
@@ -606,6 +618,7 @@ export function useMixer(): MixerApi {
       cue,
       hotCuePress,
       hotCueRelease,
+      clearHotCue,
       seek,
       sync,
       setTempo: applyTempo,
@@ -624,6 +637,6 @@ export function useMixer(): MixerApi {
       stopRecording,
       toggleRecording,
     }),
-    [left, right, crossfader, main, midiStatus, deviceName, connectMidi, loadFile, togglePlay, cue, hotCuePress, hotCueRelease, seek, sync, applyTempo, resetTempo, getTime, getDetailPeaks, setEq, setVolume, setCrossfader, setMain, scratch, scratchSeconds, seekBy, setScratching, recording, recordingElapsed, startRecording, stopRecording, toggleRecording],
+    [left, right, crossfader, main, midiStatus, deviceName, connectMidi, loadFile, togglePlay, cue, hotCuePress, hotCueRelease, clearHotCue, seek, sync, applyTempo, resetTempo, getTime, getDetailPeaks, setEq, setVolume, setCrossfader, setMain, scratch, scratchSeconds, seekBy, setScratching, recording, recordingElapsed, startRecording, stopRecording, toggleRecording],
   );
 }
