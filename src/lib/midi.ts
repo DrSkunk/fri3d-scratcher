@@ -98,19 +98,25 @@ function isRealDevice(name: string | null | undefined): boolean {
   return !VIRTUAL_PORT_NAMES.some((re) => re.test(name));
 }
 
-// The firmware reports this name; prefer a port matching it over other
-// non-virtual ports (e.g. ALSA's generic "Input/Output connection" names,
-// which other MIDI-capable devices such as the badge can also present as).
+// The firmware reports this name. We require a positive match rather than
+// falling back to "the first non-virtual port": OSes/browsers always expose
+// at least one synthetic port even with no hardware attached at all (e.g.
+// Chromium backs its Web MIDI implementation on Linux with ALSA "WebMIDI
+// input/output" wrapper clients around the "Midi Through" loopback, generically
+// named "Input connection"/"Output connection" — those pass a loose "not
+// virtual" filter and would otherwise be reported as a connected controller
+// when nothing is actually plugged in).
 const ADDON_PORT_NAME = /dj.?2026/i;
 
+function isAddonPort(name: string | null | undefined): boolean {
+  return isRealDevice(name) && ADDON_PORT_NAME.test(name ?? "");
+}
+
 function pickBestPort<T extends { name?: string | null }>(ports: Iterable<T>): T | null {
-  let fallback: T | null = null;
   for (const port of ports) {
-    if (!isRealDevice(port.name)) continue;
-    if (ADDON_PORT_NAME.test(port.name ?? "")) return port;
-    if (!fallback) fallback = port;
+    if (isAddonPort(port.name)) return port;
   }
-  return fallback;
+  return null;
 }
 
 export type MidiStatus = "unsupported" | "idle" | "connecting" | "connected" | "error";
@@ -176,7 +182,7 @@ export class MidiController {
 
   private hasDevice(): boolean {
     if (!this.access) return false;
-    return this.access.inputs.size > 0 || this.access.outputs.size > 0;
+    return pickBestPort(this.access.inputs.values()) != null || pickBestPort(this.access.outputs.values()) != null;
   }
 
   private firstInputName(): string | undefined {
@@ -187,8 +193,7 @@ export class MidiController {
   private bindInputs(): void {
     if (!this.access) return;
     for (const input of this.access.inputs.values()) {
-      if (!isRealDevice(input.name)) continue;
-      input.onmidimessage = (e) => this.handleMessage(e);
+      input.onmidimessage = isAddonPort(input.name) ? (e) => this.handleMessage(e) : null;
     }
   }
 
