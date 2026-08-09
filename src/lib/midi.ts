@@ -87,6 +87,32 @@ function ccLabel(cc: number): string {
 
 const hex2 = (n: number) => `0x${n.toString(16).padStart(2, "0")}`;
 
+// Virtual/software MIDI ports that OSes always expose, unrelated to any
+// connected hardware. Never treat these as the DJ addon: on Linux ALSA's
+// "Midi Through" loops writes straight back to its own paired input, which
+// looks like the addon echoing back whatever CC we just sent it.
+const VIRTUAL_PORT_NAMES = [/midi through/i, /microsoft gs wavetable synth/i];
+
+function isRealDevice(name: string | null | undefined): boolean {
+  if (!name) return true;
+  return !VIRTUAL_PORT_NAMES.some((re) => re.test(name));
+}
+
+// The firmware reports this name; prefer a port matching it over other
+// non-virtual ports (e.g. ALSA's generic "Input/Output connection" names,
+// which other MIDI-capable devices such as the badge can also present as).
+const ADDON_PORT_NAME = /dj.?2026/i;
+
+function pickBestPort<T extends { name?: string | null }>(ports: Iterable<T>): T | null {
+  let fallback: T | null = null;
+  for (const port of ports) {
+    if (!isRealDevice(port.name)) continue;
+    if (ADDON_PORT_NAME.test(port.name ?? "")) return port;
+    if (!fallback) fallback = port;
+  }
+  return fallback;
+}
+
 export type MidiStatus = "unsupported" | "idle" | "connecting" | "connected" | "error";
 
 export interface MidiEvents {
@@ -162,17 +188,14 @@ export class MidiController {
   private bindInputs(): void {
     if (!this.access) return;
     for (const input of this.access.inputs.values()) {
+      if (!isRealDevice(input.name)) continue;
       input.onmidimessage = (e) => this.handleMessage(e);
     }
   }
 
   private pickOutput(): void {
     if (!this.access) return;
-    for (const output of this.access.outputs.values()) {
-      this.output = output;
-      return;
-    }
-    this.output = null;
+    this.output = pickBestPort(this.access.outputs.values());
   }
 
   private handleMessage(event: MIDIMessageEvent): void {
