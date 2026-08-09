@@ -181,8 +181,7 @@ export class MidiController {
 
   private firstInputName(): string | undefined {
     if (!this.access) return undefined;
-    for (const input of this.access.inputs.values()) return input.name ?? undefined;
-    return undefined;
+    return pickBestPort(this.access.inputs.values())?.name ?? undefined;
   }
 
   private bindInputs(): void {
