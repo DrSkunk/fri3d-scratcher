@@ -98,15 +98,22 @@ function isRealDevice(name: string | null | undefined): boolean {
   return !VIRTUAL_PORT_NAMES.some((re) => re.test(name));
 }
 
-// The firmware reports this name. We require a positive match rather than
-// falling back to "the first non-virtual port": OSes/browsers always expose
-// at least one synthetic port even with no hardware attached at all (e.g.
-// Chromium backs its Web MIDI implementation on Linux with ALSA "WebMIDI
-// input/output" wrapper clients around the "Midi Through" loopback, generically
-// named "Input connection"/"Output connection" — those pass a loose "not
-// virtual" filter and would otherwise be reported as a connected controller
-// when nothing is actually plugged in).
-const ADDON_PORT_NAME = /dj.?2026/i;
+// Two legitimate ways to reach the addon report different names, and we
+// require a positive match against one of them rather than falling back to
+// "the first non-virtual port": OSes/browsers always expose at least one
+// synthetic port even with no hardware attached at all (e.g. Chromium backs
+// its Web MIDI implementation on Linux with ALSA "WebMIDI input/output"
+// wrapper clients around the "Midi Through" loopback, generically named
+// "Input connection"/"Output connection" — those pass a loose "not virtual"
+// filter and would otherwise be reported as a connected controller when
+// nothing is actually plugged in).
+//   - "dj2026 MIDI 1": the addon's own firmware, when its USB-C port is
+//     connected directly to this computer.
+//   - "Espressif Device MIDI 1": the Fri3d badge's USB MIDI interface, when
+//     the addon is attached to the badge (I2C/UART) and the badge's own
+//     USB-C port is what's connected instead; the badge's MicroPythonOS
+//     DJ Addon app relays the addon's UART MIDI traffic over this port.
+const ADDON_PORT_NAME = /dj.?2026|espressif/i;
 
 function isAddonPort(name: string | null | undefined): boolean {
   return isRealDevice(name) && ADDON_PORT_NAME.test(name ?? "");
