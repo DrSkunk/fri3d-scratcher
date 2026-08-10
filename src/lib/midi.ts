@@ -109,11 +109,14 @@ function isRealDevice(name: string | null | undefined): boolean {
 // nothing is actually plugged in).
 //   - "dj2026 MIDI 1": the addon's own firmware, when its USB-C port is
 //     connected directly to this computer.
-//   - "Espressif Device MIDI 1": the Fri3d badge's USB MIDI interface, when
-//     the addon is attached to the badge (I2C/UART) and the badge's own
+//   - "Fri3d Badge DJ Addon MIDI 1": the Fri3d badge's USB MIDI interface,
+//     when the addon is attached to the badge (I2C/UART) and the badge's own
 //     USB-C port is what's connected instead; the badge's MicroPythonOS
 //     DJ Addon app relays the addon's UART MIDI traffic over this port.
-const ADDON_PORT_NAME = /dj.?2026|espressif/i;
+//   - "Espressif Device MIDI 1": same as above, but on a badge running an
+//     older MicroPythonOS build from before it set a custom USB product
+//     string (MicroPython's generic default name).
+const ADDON_PORT_NAME = /dj.?2026|fri3d|espressif/i;
 
 function isAddonPort(name: string | null | undefined): boolean {
   return isRealDevice(name) && ADDON_PORT_NAME.test(name ?? "");
