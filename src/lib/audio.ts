@@ -369,7 +369,8 @@ type ShowSaveFilePicker = (options?: {
 
 /** Minimal typings for the Audio Output Devices API — setSinkId() is broadly
  *  supported, but selectAudioOutput() (needed to grant permission for a
- *  non-default device) currently only ships in Firefox 116+, not Chromium. */
+ *  non-default device) currently only ships in Firefox 116+ — no other
+ *  browser (Chrome, Safari, Edge, Opera, or any mobile browser) has it. */
 interface AudioSinkElement extends HTMLMediaElement {
   setSinkId(sinkId: string): Promise<void>;
 }
