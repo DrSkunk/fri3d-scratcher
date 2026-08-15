@@ -98,7 +98,7 @@ export function TopBar({
         type="button"
         onClick={onSelectCueDevice}
         disabled={!cueSupported}
-        title={cueSupported ? "Pick a headphone/cue output device for previewing a deck before it's live" : "Cue output needs Firefox 116+ (Chrome/Chromium don't support picking an output device yet)"}
+        title={cueSupported ? "Pick a headphone/cue output device for previewing a deck before it's live" : "Cue output currently only works in Firefox 116+ (no other browser supports picking an output device yet)"}
         className="m-2 flex items-center gap-2 rounded-md border-4 border-white bg-black px-4 py-2 font-display text-xs font-bold uppercase text-white transition-transform enabled:active:translate-x-0.5 enabled:active:translate-y-0.5 disabled:opacity-50"
       >
         {cueDeviceName ? `Cue: ${cueDeviceName}` : "Set cue output"}
@@ -112,7 +112,7 @@ export function TopBar({
         title={
           cueSupported
             ? "Split cue: hear the cued deck in one ear, the master mix in the other"
-            : "Split cue needs Firefox 116+ (Chrome/Chromium don't support picking an output device yet)"
+            : "Split cue currently only works in Firefox 116+ (no other browser supports picking an output device yet)"
         }
         className={`m-2 rounded-md border-4 border-white px-4 py-2 font-display text-xs font-bold uppercase text-white transition-transform enabled:active:translate-x-0.5 enabled:active:translate-y-0.5 disabled:opacity-50 ${
           splitCue ? "bg-fri3d-purple" : "bg-black"
