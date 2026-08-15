@@ -15,6 +15,16 @@ interface TopBarProps {
   recordingElapsed: number;
   /** Start/stop recording the master output. */
   onToggleRecording: () => void;
+  /** Whether cue/headphone output routing is supported in this browser. */
+  cueSupported: boolean;
+  /** Label of the selected cue output device, once chosen. */
+  cueDeviceName?: string;
+  /** Prompt the user to pick a cue/headphone output device. */
+  onSelectCueDevice: () => void;
+  /** Whether cue is split across ears (cue left, master right) vs both ears. */
+  splitCue: boolean;
+  /** Toggle split-cue mode. */
+  onToggleSplitCue: () => void;
 }
 
 const STATUS_TEXT: Record<MidiStatus, string> = {
@@ -41,12 +51,17 @@ export function TopBar({
   recordingSupported,
   recordingElapsed,
   onToggleRecording,
+  cueSupported,
+  cueDeviceName,
+  onSelectCueDevice,
+  splitCue,
+  onToggleSplitCue,
 }: TopBarProps) {
   const live = status === "connected";
   const logoUrl = `${import.meta.env.BASE_URL}fri3d-logo-white.svg`;
 
   return (
-    <header className="grid grid-cols-[auto_1fr_auto_auto_auto_auto] items-stretch bg-black text-white">
+    <header className="grid grid-cols-[auto_1fr_auto_auto_auto_auto_auto_auto] items-stretch bg-black text-white">
       <div className="flex items-center gap-3 px-4 py-3 font-display text-xl font-bold uppercase">
         <img src={logoUrl} alt="Fri3d" className="h-8 w-auto" />
         <span className="text-fri3d-mint">Scratcher</span>
@@ -77,6 +92,33 @@ export function TopBar({
           className={`inline-block h-3 w-3 rounded-full bg-fri3d-red ${recording ? "animate-pulse bg-white" : ""}`}
         />
         {recording ? `Rec ${formatElapsed(recordingElapsed)}` : "Record"}
+      </button>
+
+      <button
+        type="button"
+        onClick={onSelectCueDevice}
+        disabled={!cueSupported}
+        title={cueSupported ? "Pick a headphone/cue output device for previewing a deck before it's live" : "Cue output needs Firefox 116+ (Chrome/Chromium don't support picking an output device yet)"}
+        className="m-2 flex items-center gap-2 rounded-md border-4 border-white bg-black px-4 py-2 font-display text-xs font-bold uppercase text-white transition-transform enabled:active:translate-x-0.5 enabled:active:translate-y-0.5 disabled:opacity-50"
+      >
+        {cueDeviceName ? `Cue: ${cueDeviceName}` : "Set cue output"}
+      </button>
+
+      <button
+        type="button"
+        onClick={onToggleSplitCue}
+        disabled={!cueSupported}
+        aria-pressed={splitCue}
+        title={
+          cueSupported
+            ? "Split cue: hear the cued deck in one ear, the master mix in the other"
+            : "Split cue needs Firefox 116+ (Chrome/Chromium don't support picking an output device yet)"
+        }
+        className={`m-2 rounded-md border-4 border-white px-4 py-2 font-display text-xs font-bold uppercase text-white transition-transform enabled:active:translate-x-0.5 enabled:active:translate-y-0.5 disabled:opacity-50 ${
+          splitCue ? "bg-fri3d-purple" : "bg-black"
+        }`}
+      >
+        Split cue
       </button>
 
       <button

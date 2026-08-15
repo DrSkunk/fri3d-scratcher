@@ -2,7 +2,12 @@
 //
 // Per deck the signal chain is:
 //   ScratchWorklet -> low(shelf) -> mid(peak) -> high(shelf)
-//     -> volume(gain) -> crossfade(gain) -> main -> destination
+//     -> masterGate(gain) -> volume(gain) -> crossfade(gain) -> main -> destination
+//     -> cueGain(gain) -> cue bus -> cue destination (headphone preview)
+// masterGate and cueGain are driven together by setCue(): cueing a deck for
+// headphone preview mutes it from the master so you can sync the next track
+// without the crowd hearing it, mirroring "fader down + PFL" on a real mixer
+// without needing a separate fader gesture.
 //
 // Playback is driven by an AudioWorklet (scratch-processor.js) reading a
 // decoded AudioBuffer with a floating-point playhead. This gives true
@@ -36,6 +41,12 @@ export class Deck {
   private volume: GainNode;
   /** Crossfade contribution, driven by the engine. */
   readonly crossGain: GainNode;
+  /** Pre-fader tap to the cue bus (post-EQ, independent of volume/crossfader),
+   *  muted unless this deck's cue/PFL toggle is on. */
+  private readonly cueGain: GainNode;
+  /** Mutes this deck's contribution to the master while it's cued, so
+   *  previewing in headphones doesn't also play out to the crowd. */
+  private readonly masterGate: GainNode;
 
   /** Resolves once the worklet module is registered and a node can be made. */
   private readonly workletReady: Promise<void>;
@@ -64,7 +75,7 @@ export class Deck {
   /** High-resolution waveform peaks spanning the whole track, for the zoom view. */
   detailPeaks: Float32Array | null = null;
 
-  constructor(ctx: AudioContext, destination: AudioNode, workletReady: Promise<void>) {
+  constructor(ctx: AudioContext, destination: AudioNode, cueBus: AudioNode, workletReady: Promise<void>) {
     this.ctx = ctx;
     this.workletReady = workletReady;
 
@@ -87,11 +98,20 @@ export class Deck {
     this.crossGain = ctx.createGain();
     this.crossGain.gain.value = 1;
 
+    this.cueGain = ctx.createGain();
+    this.cueGain.gain.value = 0;
+
+    this.masterGate = ctx.createGain();
+    this.masterGate.gain.value = 1;
+
     this.low.connect(this.mid);
     this.mid.connect(this.high);
-    this.high.connect(this.volume);
+    this.high.connect(this.masterGate);
+    this.high.connect(this.cueGain);
+    this.masterGate.connect(this.volume);
     this.volume.connect(this.crossGain);
     this.crossGain.connect(destination);
+    this.cueGain.connect(cueBus);
   }
 
   /** Post to the worklet, queueing until the node is created. */
@@ -213,6 +233,13 @@ export class Deck {
 
   setVolume(value: number): void {
     this.volume.gain.value = Math.max(0, Math.min(1, value));
+  }
+
+  /** Toggle headphone preview: while on, this deck is sent to the cue bus and
+   *  muted from the master, so you can sync it without it going out live. */
+  setCue(enabled: boolean): void {
+    this.cueGain.gain.value = enabled ? 1 : 0;
+    this.masterGate.gain.value = enabled ? 0 : 1;
   }
 
   // --- Tempo / sync -------------------------------------------------------
@@ -340,6 +367,16 @@ type ShowSaveFilePicker = (options?: {
   types?: { description?: string; accept: Record<string, string[]> }[];
 }) => Promise<SaveFileHandle>;
 
+/** Minimal typings for the Audio Output Devices API — setSinkId() is broadly
+ *  supported, but selectAudioOutput() (needed to grant permission for a
+ *  non-default device) currently only ships in Firefox 116+, not Chromium. */
+interface AudioSinkElement extends HTMLMediaElement {
+  setSinkId(sinkId: string): Promise<void>;
+}
+interface MediaDevicesWithOutputSelection extends MediaDevices {
+  selectAudioOutput(options?: { deviceId?: string }): Promise<MediaDeviceInfo>;
+}
+
 /** MP3 bitrate (kbps) for recorded sets — 192 is a good quality/size balance. */
 const REC_BITRATE_KBPS = 192;
 
@@ -349,6 +386,20 @@ export class MixerEngine {
   readonly right: Deck;
   private main: GainNode;
   private crossfaderValue = 0.5;
+
+  // --- Cue / headphone preview (pre-fader listen, routed to a second device) ---
+  /** Sum of every cue-enabled deck's pre-fader tap. */
+  private readonly cueSum: GainNode;
+  /** Tap of the master bus, used only for split-cue's other ear. */
+  private readonly masterTap: GainNode;
+  /** Downmixes cueSum -> left channel, masterTap -> right channel, for split cue. */
+  private readonly cueMerger: ChannelMergerNode;
+  private readonly cueDestination: MediaStreamAudioDestinationNode;
+  private cueAudioEl: HTMLAudioElement | null = null;
+  /** Label of the currently selected cue output device, once chosen. */
+  cueDeviceLabel: string | null = null;
+  /** Whether cue is split across ears (cue left, master right) vs both ears. */
+  private _splitCue = false;
 
   // --- Recording (encodes MP3 and streams it straight to a file on disk) ---
   private readonly recorderReady: Promise<void>;
@@ -366,12 +417,21 @@ export class MixerEngine {
     this.main = this.ctx.createGain();
     this.main.gain.value = 0.9;
     this.main.connect(this.ctx.destination);
+
+    this.cueSum = this.ctx.createGain();
+    this.masterTap = this.ctx.createGain();
+    this.main.connect(this.masterTap);
+    this.cueMerger = this.ctx.createChannelMerger(2);
+    this.cueDestination = this.ctx.createMediaStreamDestination();
+    // Default (non-split) routing: both ears hear the same cue mix.
+    this.cueSum.connect(this.cueDestination);
+
     // Register the scratch worklet once; decks create their nodes when ready.
     const workletReady = this.ctx.audioWorklet.addModule(scratchProcessorUrl);
     // Register the recorder probe worklet used to stream audio to disk.
     this.recorderReady = this.ctx.audioWorklet.addModule(recorderProcessorUrl);
-    this.left = new Deck(this.ctx, this.main, workletReady);
-    this.right = new Deck(this.ctx, this.main, workletReady);
+    this.left = new Deck(this.ctx, this.main, this.cueSum, workletReady);
+    this.right = new Deck(this.ctx, this.main, this.cueSum, workletReady);
     this.applyCrossfader();
   }
 
@@ -404,6 +464,56 @@ export class MixerEngine {
    *  (needs the File System Access API's showSaveFilePicker). */
   get canRecord(): boolean {
     return typeof window !== "undefined" && "showSaveFilePicker" in window;
+  }
+
+  /** Whether routing cue preview to a chosen output device is possible in
+   *  this browser (needs the Audio Output Devices API). */
+  get canCue(): boolean {
+    return (
+      typeof navigator !== "undefined" &&
+      !!navigator.mediaDevices &&
+      "selectAudioOutput" in navigator.mediaDevices &&
+      typeof HTMLMediaElement !== "undefined" &&
+      "setSinkId" in HTMLMediaElement.prototype
+    );
+  }
+
+  get splitCue(): boolean {
+    return this._splitCue;
+  }
+
+  /** Split cue across ears: cue mix in the left ear, master mix in the
+   *  right, so you can beatmatch without losing track of what's live.
+   *  When off, both ears hear the same cue mix. */
+  setSplitCue(enabled: boolean): void {
+    if (enabled === this._splitCue) return;
+    this._splitCue = enabled;
+    if (enabled) {
+      this.cueSum.disconnect(this.cueDestination);
+      this.cueSum.connect(this.cueMerger, 0, 0);
+      this.masterTap.connect(this.cueMerger, 0, 1);
+      this.cueMerger.connect(this.cueDestination);
+    } else {
+      this.cueMerger.disconnect(this.cueDestination);
+      this.cueSum.disconnect(this.cueMerger);
+      this.masterTap.disconnect(this.cueMerger);
+      this.cueSum.connect(this.cueDestination);
+    }
+  }
+
+  /** Ask the user to pick an output device (e.g. headphones), then route the
+   *  cue bus to it. Must be called from a user gesture. Resolves with the
+   *  chosen device's label. Rejects with NotFoundError if the user cancels. */
+  async selectCueOutput(): Promise<string> {
+    const device = await (navigator.mediaDevices as MediaDevicesWithOutputSelection).selectAudioOutput();
+    if (!this.cueAudioEl) {
+      this.cueAudioEl = new Audio();
+      this.cueAudioEl.srcObject = this.cueDestination.stream;
+    }
+    await (this.cueAudioEl as AudioSinkElement).setSinkId(device.deviceId);
+    await this.cueAudioEl.play();
+    this.cueDeviceLabel = device.label || "Headphones";
+    return this.cueDeviceLabel;
   }
 
   get isRecording(): boolean {
@@ -512,6 +622,11 @@ export class MixerEngine {
       this.recWriter = null;
       this._recording = false;
       void this.recWriteQueue.then(() => writer.abort?.() ?? writer.close());
+    }
+    if (this.cueAudioEl) {
+      this.cueAudioEl.pause();
+      this.cueAudioEl.srcObject = null;
+      this.cueAudioEl = null;
     }
     this.left.destroy();
     this.right.destroy();

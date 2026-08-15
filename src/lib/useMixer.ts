@@ -38,6 +38,8 @@ export interface DeckState {
   tempo: number;
   /** Effective BPM after the tempo multiplier. */
   effectiveBpm: number | null;
+  /** Whether this deck is sent to the cue/headphone output (PFL). */
+  cue: boolean;
 }
 
 const initialDeck = (): DeckState => ({
@@ -61,6 +63,7 @@ const initialDeck = (): DeckState => ({
   beatOffset: 0,
   tempo: 1,
   effectiveBpm: null,
+  cue: false,
 });
 
 export interface MixerApi {
@@ -78,6 +81,19 @@ export interface MixerApi {
   recordingSupported: boolean;
   /** Seconds elapsed in the current recording (0 when idle). */
   recordingElapsed: number;
+
+  /** Whether cue/headphone preview is supported in this browser. */
+  cueSupported: boolean;
+  /** Label of the selected cue output device, once chosen. */
+  cueDeviceName?: string;
+  /** Prompt the user to pick a cue/headphone output device. */
+  selectCueDevice: () => void;
+  /** Toggle whether a deck is sent to the cue output (PFL). */
+  toggleCue: (side: DeckSide) => void;
+  /** Whether cue is split across ears (cue left, master right) vs both ears. */
+  splitCue: boolean;
+  /** Toggle split-cue mode. */
+  toggleSplitCue: () => void;
 
   connectMidi: () => void;
   loadFile: (side: DeckSide, file: File) => void;
@@ -145,6 +161,8 @@ export function useMixer(): MixerApi {
   const [recordingElapsed, setRecordingElapsed] = useState(0);
   // Wall-clock time the current recording started, for the elapsed counter.
   const recordStartRef = useRef<number | null>(null);
+  const [cueDeviceName, setCueDeviceName] = useState<string | undefined>(undefined);
+  const [splitCue, setSplitCueState] = useState(false);
 
   const setDeck = useCallback((side: DeckSide, patch: Partial<DeckState>) => {
     const setter = side === "left" ? setLeft : setRight;
@@ -480,6 +498,37 @@ export function useMixer(): MixerApi {
     return () => window.clearInterval(id);
   }, [recording]);
 
+  // --- Cue / headphone preview ---------------------------------------------
+
+  const toggleCue = useCallback(
+    (side: DeckSide) => {
+      const engine = ensureEngine();
+      const enabled = !(side === "left" ? left.cue : right.cue);
+      engine.deck(side).setCue(enabled);
+      setDeck(side, { cue: enabled });
+    },
+    [ensureEngine, setDeck, left.cue, right.cue],
+  );
+
+  const toggleSplitCue = useCallback(() => {
+    const engine = ensureEngine();
+    const next = !engine.splitCue;
+    engine.setSplitCue(next);
+    setSplitCueState(next);
+  }, [ensureEngine]);
+
+  const selectCueDevice = useCallback(() => {
+    const engine = ensureEngine();
+    if (!engine.canCue) return;
+    void engine
+      .selectCueOutput()
+      .then((label) => setCueDeviceName(label))
+      .catch((err: unknown) => {
+        // The user dismissing the device picker is not an error worth surfacing.
+        if ((err as DOMException)?.name !== "NotFoundError") console.error("Cue output selection failed:", err);
+      });
+  }, [ensureEngine]);
+
   // --- MIDI ---------------------------------------------------------------
 
   const connectMidi = useCallback(() => {
@@ -612,6 +661,17 @@ export function useMixer(): MixerApi {
       recording,
       recordingSupported: typeof window !== "undefined" && "showSaveFilePicker" in window,
       recordingElapsed,
+      cueSupported:
+        typeof navigator !== "undefined" &&
+        !!navigator.mediaDevices &&
+        "selectAudioOutput" in navigator.mediaDevices &&
+        typeof HTMLMediaElement !== "undefined" &&
+        "setSinkId" in HTMLMediaElement.prototype,
+      cueDeviceName,
+      selectCueDevice,
+      toggleCue,
+      splitCue,
+      toggleSplitCue,
       connectMidi,
       loadFile,
       togglePlay,
@@ -637,6 +697,6 @@ export function useMixer(): MixerApi {
       stopRecording,
       toggleRecording,
     }),
-    [left, right, crossfader, main, midiStatus, deviceName, connectMidi, loadFile, togglePlay, cue, hotCuePress, hotCueRelease, clearHotCue, seek, sync, applyTempo, resetTempo, getTime, getDetailPeaks, setEq, setVolume, setCrossfader, setMain, scratch, scratchSeconds, seekBy, setScratching, recording, recordingElapsed, startRecording, stopRecording, toggleRecording],
+    [left, right, crossfader, main, midiStatus, deviceName, connectMidi, loadFile, togglePlay, cue, hotCuePress, hotCueRelease, clearHotCue, seek, sync, applyTempo, resetTempo, getTime, getDetailPeaks, setEq, setVolume, setCrossfader, setMain, scratch, scratchSeconds, seekBy, setScratching, recording, recordingElapsed, startRecording, stopRecording, toggleRecording, cueDeviceName, selectCueDevice, toggleCue, splitCue, toggleSplitCue],
   );
 }

@@ -121,6 +121,18 @@ export function Deck({ side, state, mixer }: DeckProps) {
         </h2>
         <button
           type="button"
+          onClick={() => mixer.toggleCue(side)}
+          disabled={!mixer.cueSupported}
+          aria-pressed={state.cue}
+          title={mixer.cueSupported ? "Preview this deck in your headphones only, muted from the master while cued" : "Cue output needs Firefox 116+ (Chrome/Chromium don't support picking an output device yet)"}
+          className={`rounded-md border-4 border-black px-3 py-2 font-display text-xs font-bold uppercase shadow-hard-sm transition-transform enabled:active:translate-x-1 enabled:active:translate-y-1 enabled:active:shadow-none disabled:opacity-40 ${
+            state.cue ? "bg-fri3d-red text-white" : "bg-white"
+          }`}
+        >
+          Cue
+        </button>
+        <button
+          type="button"
           data-tutorial={`load-${side}`}
           onClick={() => fileRef.current?.click()}
           className="rounded-md border-4 border-black bg-fri3d-mint px-3 py-2 font-display text-xs font-bold uppercase shadow-hard-sm transition-transform active:translate-x-1 active:translate-y-1 active:shadow-none"
