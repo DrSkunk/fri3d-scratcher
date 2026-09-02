@@ -21,46 +21,54 @@ export const CC = {
 
   CROSSFADER: 0x59,
 
-  SCRATCH_LEFT_POS: 0x44,
+  SCRATCH_LEFT_SPEED: 0x44,
   SCRATCH_LEFT_ACTIVE: 0x45,
-  SCRATCH_RIGHT_POS: 0x54,
+  SCRATCH_RIGHT_SPEED: 0x54,
   SCRATCH_RIGHT_ACTIVE: 0x55,
 } as const;
 
-// The 3x3 matrix exposes 8 usable buttons. Order them 0..7 the way the
-// firmware indexes them so the UI pads line up with the hardware.
-// ordered from top left to bottom right in 2 rows
-// modulo 4; 0 = play, 1 = hot 2, 2 = hot 1, 3 = cue
-export const BUTTON_CC: Record<number, number> = {
-  0x60: 3, // col 1 row 0 -- top row button 1 // deck 1 cue
-  0x61: 2, // col 1 row 2 -- top row button 2 // deck 1 hot 1
-  0x62: 6, // col 1 row 1 -- top row button 3 // deck 2 hot 1
-  0x63: 7, // col 2 row 1 -- top row button 4 // deck 2 cue
-  0x64: 0, // col 0 row 0 -- bottom row button 1 // deck 1 play
-  0x65: 1, // col 0 row 2 -- bottom row button 2 // deck 1 hot 2
-  0x66: 5, // col 0 row 1 -- bottom row button 3 // deck 2 hot 2
-  0x67: 4, // col 2 row 0 -- bottom row button 4 // deck 2 play
-};
-
-// Firmware LED palette (value sent over CC 0x20..0x27).
-export const LED_COLOR = {
-  OFF: 0,
-  ORANGE_RED: 1,
-  TEAL: 2,
-  YELLOW_GREEN: 3,
-  WARM_WHITE: 4,
-  BLUE: 5,
-  CYAN: 6,
-  WHITE: 7,
-  BRIGHT_WHITE: 8,
-  GREEN: 9,
-} as const;
-
+// The 8 buttons (two rows of 4) each send their own CC directly — no matrix
+// scan/decode needed — and each sits above its own RGB LED at the same offset
+// from LED_CC_BASE. So button CC 0x60+i and LED CC 0x20+i are the same physical
+// slot i (0..7); see setAddonLed/setAddonLeds for the LED side.
+const BUTTON_CC_BASE = 0x60;
 const LED_CC_BASE = 0x20;
-// LED CC slots (0x20..0x27) follow the same physical matrix order as button
-// CCs (0x60..0x67), not the logical 0..7 button indices used by onButton.
-// Map logical button index -> physical LED slot.
-const LED_SLOT_FOR_BUTTON = [4, 5, 1, 0, 7, 6, 2, 3] as const;
+
+// SysEx LED RGB protocol: F0 13 37 <led> <red> <green> <blue> [<led> <red> <green> <blue> ...] F7.
+// Multiple <led><red><green><blue> patterns can be packed into a single
+// message to update many LEDs at once. Data bytes are limited to 0x7F, so
+// 8-bit colour components are right-shifted by one bit before being sent.
+type LedRgbEntry = readonly [index: number, r: number, g: number, b: number];
+const SYSEX_MANUFACTURER = [0x13, 0x37];
+const SYSEX_START = 0xf0;
+const SYSEX_END = 0xf7;
+
+function toSysexColorByte(value: number): number {
+  return Math.max(0, Math.min(255, value | 0)) >> 1;
+}
+
+const SATURATION_BOOST = 2.0;
+
+// Push an RGB colour's saturation up by scaling each channel's distance from
+// the colour's mean outward, so it reads vividly on the LEDs (which otherwise
+// look washed out next to their on-screen source colour). Unlike a plain HSL
+// saturation boost — which caps out once a colour hits full saturation — this
+// keeps responding as the boost factor increases, clipping toward pure,
+// neon-bright primaries instead of flattening out.
+function saturateRgb(r: number, g: number, b: number): readonly [number, number, number] {
+  const mean = (r + g + b) / 3;
+  const push = (channel: number) => Math.max(0, Math.min(255, Math.round(mean + (channel - mean) * SATURATION_BOOST)));
+  return [push(r), push(g), push(b)];
+}
+
+// Full-saturation, full-brightness HSV -> RGB, used for the BLOOPPAD-MAXX connect animation.
+function hueToRgb(hueDeg: number): readonly [number, number, number] {
+  const h = ((hueDeg % 360) + 360) % 360;
+  const x = 255 * (1 - Math.abs(((h / 60) % 2) - 1));
+  const [r, g, b] =
+    h < 60 ? [255, x, 0] : h < 120 ? [x, 255, 0] : h < 180 ? [0, 255, x] : h < 240 ? [0, x, 255] : h < 300 ? [x, 0, 255] : [255, 0, x];
+  return [Math.round(r), Math.round(g), Math.round(b)];
+}
 
 // Human-readable names for known CC numbers, for debug logging.
 const CC_NAMES: Record<number, string> = {
@@ -73,15 +81,15 @@ const CC_NAMES: Record<number, string> = {
   [CC.RIGHT_BOTTOM]: "RIGHT_BOTTOM (high)",
   [CC.RIGHT_FADER]: "RIGHT_FADER (volume)",
   [CC.CROSSFADER]: "CROSSFADER",
-  [CC.SCRATCH_LEFT_POS]: "SCRATCH_LEFT_POS",
+  [CC.SCRATCH_LEFT_SPEED]: "SCRATCH_LEFT_SPEED",
   [CC.SCRATCH_LEFT_ACTIVE]: "SCRATCH_LEFT_ACTIVE",
-  [CC.SCRATCH_RIGHT_POS]: "SCRATCH_RIGHT_POS",
+  [CC.SCRATCH_RIGHT_SPEED]: "SCRATCH_RIGHT_SPEED",
   [CC.SCRATCH_RIGHT_ACTIVE]: "SCRATCH_RIGHT_ACTIVE",
 };
 
 function ccLabel(cc: number): string {
   if (cc in CC_NAMES) return CC_NAMES[cc];
-  if (cc in BUTTON_CC) return `BUTTON_${BUTTON_CC[cc]}`;
+  if (cc >= BUTTON_CC_BASE && cc < BUTTON_CC_BASE + 8) return `BUTTON_${cc - BUTTON_CC_BASE}`;
   return "unknown";
 }
 
@@ -140,14 +148,19 @@ export type MidiStatus = "unsupported" | "idle" | "connecting" | "connected" | "
 export interface MidiEvents {
   /** A pot or fader moved. value is normalised 0..1. */
   onAnalog(cc: number, value: number): void;
-  /** Absolute scratch encoder position, 0..127 wrapping. */
-  onScratchPosition(side: DeckSide, position: number): void;
+  /** Signed jogwheel speed/direction: negative = counter-clockwise, positive =
+   * clockwise, 0 = stopped; magnitude is the turn rate. */
+  onScratchSpeed(side: DeckSide, speed: number): void;
   /** Scratch activity flag. */
   onScratchActive(side: DeckSide, active: boolean): void;
-  /** A matrix button changed. index 0..7. */
+  /** A DJ addon button changed. index 0..7 is the physical slot (CC - BUTTON_CC_BASE), same slot its LED lives at. */
   onButton(index: number, pressed: boolean): void;
   /** A BLOOPPAD-MAXX grid button changed. */
   onBloopPadButton?(row: number, column: number, pressed: boolean): void;
+  /** The DJ addon finished its connect animation; push real LED state via setAddonLeds. */
+  onAddonConnected?(): void;
+  /** A BLOOPPAD-MAXX finished its connect animation; push real LED state via setBloopPadLeds. */
+  onBloopPadConnected?(): void;
   /** Connection / device status changed. */
   onStatus(status: MidiStatus, deviceName?: string): void;
 }
@@ -156,9 +169,15 @@ export class MidiController {
   private access: MIDIAccess | null = null;
   private output: MIDIOutput | null = null;
   private bloopPadOutput: MIDIOutput | null = null;
+  /** Bumped whenever output actually changes, to invalidate any in-flight connect animation. */
+  private addonGeneration = 0;
+  /** Bumped whenever bloopPadOutput actually changes, to invalidate any in-flight connect animation. */
+  private bloopPadGeneration = 0;
   private events: MidiEvents;
-  private ledState = new Array<number>(8).fill(-1);
-  private bloopPadLedState = new Array<number>(64).fill(-1);
+  /** Packed (r<<16|g<<8|b) per-LED cache for the DJ addon's SysEx RGB path. */
+  private addonLedRgbState = new Array<number>(8).fill(-1);
+  /** Packed (r<<16|g<<8|b) per-LED cache for the BLOOPPAD-MAXX SysEx RGB path. */
+  private bloopPadLedRgbState = new Array<number>(64).fill(-1);
   private bloopPadButtonState = new Array<boolean>(64).fill(false);
   /** Last known pressed state per button index, to debounce duplicate firmware events. */
   private buttonState = new Array<boolean>(8).fill(false);
@@ -181,7 +200,7 @@ export class MidiController {
     }
     this.events.onStatus("connecting");
     try {
-      const access = await navigator.requestMIDIAccess({ sysex: false });
+      const access = await navigator.requestMIDIAccess({ sysex: true });
       this.access = access;
       this.bindInputs();
       this.pickOutputs();
@@ -232,19 +251,43 @@ export class MidiController {
   }
 
   private pickOutputs(): void {
-    this.output = null;
-    this.bloopPadOutput = null;
-    if (!this.access) return;
-    this.output = pickBestPort(this.access.outputs.values());
-    for (const output of this.access.outputs.values()) {
-      if (isBloopPadPort(output)) {
-        this.bloopPadOutput = output;
-        break;
+    const output = this.access ? pickBestPort(this.access.outputs.values()) : null;
+
+    let bloopPadOutput: MIDIOutput | null = null;
+    if (this.access) {
+      for (const candidate of this.access.outputs.values()) {
+        if (isBloopPadPort(candidate)) {
+          bloopPadOutput = candidate;
+          break;
+        }
       }
     }
+
+    // Only touch output/bloopPadOutput (and their generations) when the resolved port
+    // actually changes — access.onstatechange can fire multiple times for one physical
+    // hotplug (composite USB-MIDI devices enumerate input/output separately), and briefly
+    // nulling them on every one of those would kill an in-flight connect animation for
+    // no reason.
+    const addonChanged = output !== this.output;
+    if (addonChanged) {
+      this.output = output;
+      this.addonGeneration++;
+    }
+    const bloopPadChanged = bloopPadOutput !== this.bloopPadOutput;
+    if (bloopPadChanged) {
+      this.bloopPadOutput = bloopPadOutput;
+      this.bloopPadGeneration++;
+    }
+
     // Force a full refresh when a controller reconnects.
-    this.ledState.fill(-1);
-    this.bloopPadLedState.fill(-1);
+    this.addonLedRgbState.fill(-1);
+    this.bloopPadLedRgbState.fill(-1);
+
+    if (addonChanged && output !== null) {
+      this.requestCurrentValues();
+      this.playAddonConnectAnimation();
+    }
+    if (bloopPadChanged && bloopPadOutput !== null) this.playBloopPadConnectAnimation();
   }
 
   private handleMessage(event: MIDIMessageEvent, bloopPad: boolean): void {
@@ -277,8 +320,8 @@ export class MidiController {
       return;
     }
 
-    if (cc in BUTTON_CC) {
-      const index = BUTTON_CC[cc];
+    if (cc >= BUTTON_CC_BASE && cc < BUTTON_CC_BASE + 8) {
+      const index = cc - BUTTON_CC_BASE;
       const pressed = value === 127;
       // The firmware can emit repeated messages for the same physical state
       // (e.g. two press events with no release in between). Only forward the
@@ -301,11 +344,11 @@ export class MidiController {
       case CC.CROSSFADER:
         this.events.onAnalog(cc, value / 127);
         break;
-      case CC.SCRATCH_LEFT_POS:
-        this.events.onScratchPosition("left", value);
+      case CC.SCRATCH_LEFT_SPEED:
+        this.events.onScratchSpeed("left", value - 64);
         break;
-      case CC.SCRATCH_RIGHT_POS:
-        this.events.onScratchPosition("right", value);
+      case CC.SCRATCH_RIGHT_SPEED:
+        this.events.onScratchSpeed("right", value - 64);
         break;
       case CC.SCRATCH_LEFT_ACTIVE:
         this.events.onScratchActive("left", value === 127);
@@ -316,51 +359,174 @@ export class MidiController {
     }
   }
 
-  /** Light a single LED (index 0..7) with a firmware palette value. */
-  setLed(index: number, color: number): void {
+  /** Light a single DJ addon LED (index 0..7) with a full RGB colour via SysEx.
+   * The wire index is LED_CC_BASE + index — the same control number that used
+   * to set this LED's colour via a plain CC message. Components are 0..255. */
+  setAddonLed(index: number, r: number, g: number, b: number): void {
     if (index < 0 || index > 7) return;
-    if (this.ledState[index] === color) return;
-    this.ledState[index] = color;
-    const slot = LED_SLOT_FOR_BUTTON[index] ?? index;
-    this.output?.send([0xb0, LED_CC_BASE + slot, color]);
+    const packed = (r << 16) | (g << 8) | b;
+    if (this.addonLedRgbState[index] === packed) return;
+    this.addonLedRgbState[index] = packed;
+    this.sendRgbSysex(this.output, [[LED_CC_BASE + index, r, g, b]], "addon");
+  }
+
+  /** Push RGB colours for all 8 DJ addon LEDs, as one SysEx message. Components are 0..255. */
+  setAddonLeds(colors: readonly (readonly [number, number, number])[]): void {
+    const entries: LedRgbEntry[] = [];
+    for (let index = 0; index < 8; index++) {
+      const [r, g, b] = colors[index] ?? [0, 0, 0];
+      const packed = (r << 16) | (g << 8) | b;
+      if (this.addonLedRgbState[index] === packed) continue;
+      this.addonLedRgbState[index] = packed;
+      entries.push([LED_CC_BASE + index, r, g, b]);
+    }
+    this.sendRgbSysex(this.output, entries, "addon");
+  }
+
+  /**
+   * Chase a comet around the DJ addon's 8 LEDs in a circle: top row left→right,
+   * then bottom row right→left, so the sweep wraps smoothly around the 2×4
+   * grid's perimeter instead of jumping across it. The head LED plus its 2
+   * trailing LEDs are lit in the same (colour-wheel-advancing) hue, dimming
+   * with distance for a comet-tail look. Turns every LED off at the end and
+   * calls the onAddonConnected event so callers can repaint real state.
+   */
+  private playAddonConnectAnimation(): void {
+    const generation = this.addonGeneration;
+    const path = [0, 1, 2, 3, 7, 6, 5, 4];
+    const tailBrightness = [1, 0.5, 0.2]; // head, then each LED behind it
+    const laps = 3;
+    const stepDelayMs = 80;
+    const totalSteps = path.length * laps;
+    const degreesPerStep = 360 / path.length; // one full colour-wheel rotation per lap
+    let step = 0;
+    const frame = () => {
+      if (this.addonGeneration !== generation) return; // disconnected / replaced mid-animation
+      const [r, g, b] = hueToRgb(step * degreesPerStep);
+      const colors = Array.from({ length: 8 }, () => [0, 0, 0] as [number, number, number]);
+      for (let tail = 0; tail < tailBrightness.length; tail++) {
+        const pathIndex = (((step - tail) % path.length) + path.length) % path.length;
+        const brightness = tailBrightness[tail];
+        colors[path[pathIndex]] = [Math.round(r * brightness), Math.round(g * brightness), Math.round(b * brightness)];
+      }
+      this.setAddonLeds(colors);
+
+      if (step < totalSteps - 1) {
+        step++;
+        setTimeout(frame, stepDelayMs);
+        return;
+      }
+      this.setAddonLeds(Array.from({ length: 8 }, () => [0, 0, 0] as const));
+      this.events.onAddonConnected?.();
+    };
+    frame();
+  }
+
+  /** Poke every analog/scratch CC the addon reports (see CC), so its firmware
+   * immediately echoes back each control's real current value instead of
+   * waiting for it to move — otherwise pots/faders read stale until touched. */
+  private requestCurrentValues(): void {
+    const output = this.output;
+    if (!output) return;
+    for (const cc of Object.values(CC)) output.send([0xb0, cc, 0]);
     if (this.debug) {
       console.log(
-        `%c[MIDI →]%c LED ${index} slot=${slot} cc=${hex2(LED_CC_BASE + slot)} color=${color}`,
+        `%c[MIDI →]%c requested current values for ${Object.keys(CC).length} analog CCs`,
         "color:#ffad64;font-weight:bold",
         "color:inherit",
       );
     }
   }
 
-  /** Push all 8 LED colours at once. */
-  setLeds(colors: number[]): void {
-    for (let i = 0; i < 8; i++) this.setLed(i, colors[i] ?? 0);
-  }
-
-  /** Light one BLOOPPAD-MAXX cell using its firmware palette (0..9). */
-  setBloopPadLed(row: number, column: number, color: number): void {
+  /** Light one BLOOPPAD-MAXX cell with a full RGB colour via SysEx. Components are 0..255. */
+  setBloopPadLed(row: number, column: number, r: number, g: number, b: number): void {
     if (row < 0 || row > 7 || column < 0 || column > 7) return;
-    const index = row * 8 + column;
-    if (this.bloopPadLedState[index] === color) return;
-    this.bloopPadLedState[index] = color;
-    const cc = (row << 4) | (0x08 + column);
-    this.bloopPadOutput?.send([0xb0, cc, Math.max(0, Math.min(9, color))]);
+    const arrayIndex = row * 8 + column;
+    const packed = (r << 16) | (g << 8) | b;
+    if (this.bloopPadLedRgbState[arrayIndex] === packed) return;
+    this.bloopPadLedRgbState[arrayIndex] = packed;
+    const wireIndex = (row << 4) | (0x08 + column);
+    this.sendRgbSysex(this.bloopPadOutput, [[wireIndex, r, g, b]], "BLOOPPAD");
   }
 
-  /** Push row-major colours for all 64 BLOOPPAD-MAXX LEDs. */
-  setBloopPadLeds(colors: number[]): void {
+  /** Push row-major RGB colours for all 64 BLOOPPAD-MAXX LEDs, as one SysEx message. Components are 0..255. */
+  setBloopPadLeds(colors: readonly (readonly [number, number, number])[]): void {
+    const entries: LedRgbEntry[] = [];
     for (let row = 0; row < 8; row++) {
       for (let column = 0; column < 8; column++) {
-        this.setBloopPadLed(row, column, colors[row * 8 + column] ?? 0);
+        const arrayIndex = row * 8 + column;
+        const [r, g, b] = colors[arrayIndex] ?? [0, 0, 0];
+        const packed = (r << 16) | (g << 8) | b;
+        if (this.bloopPadLedRgbState[arrayIndex] === packed) continue;
+        this.bloopPadLedRgbState[arrayIndex] = packed;
+        entries.push([(row << 4) | (0x08 + column), r, g, b]);
       }
     }
+    this.sendRgbSysex(this.bloopPadOutput, entries, "BLOOPPAD");
   }
-}
 
-/** Signed delta between two wrapping 0..127 encoder positions. */
-export function wrapDelta(prev: number, cur: number): number {
-  let d = cur - prev;
-  if (d > 64) d -= 128;
-  if (d < -64) d += 128;
-  return d;
+  /**
+   * Wave a rainbow across the BLOOPPAD-MAXX grid, every LED lit the whole
+   * time: each cell's hue is set by its diagonal distance from corner (0,0)
+   * minus a phase that advances every frame, so the colours themselves flow
+   * from corner (0,0) to the opposite corner (7,7) rather than LEDs blinking
+   * on/off. Brightness fades in over rampMs, holds at full brightness for
+   * holdMs, then fades back out over rampMs, before every LED turns off.
+   * Calls the onBloopPadConnected event once finished so callers can repaint
+   * real state.
+   */
+  private playBloopPadConnectAnimation(): void {
+    const generation = this.bloopPadGeneration;
+    const maxDistance = 14; // row + column at the far corner (7,7)
+    const frameDelayMs = 10;
+    const rampMs = 700; // fade-in / fade-out duration
+    const holdMs = 1; // full-brightness hold between the two fades
+    const cycles = 1; // full colour-wheel rotations across the whole animation
+    const rampFrames = Math.round(rampMs / frameDelayMs);
+    const totalFrames = rampFrames * 2 + Math.round(holdMs / frameDelayMs);
+    const degreesPerFrame = (360 * cycles) / totalFrames; // hue shift per frame — how fast the colours flow
+    let frameIndex = 0;
+    let phase = 0;
+    const frame = () => {
+      if (this.bloopPadGeneration !== generation) return; // disconnected / replaced mid-animation
+      const brightness =
+        frameIndex < rampFrames ? frameIndex / rampFrames : Math.min(1, (totalFrames - frameIndex) / rampFrames);
+      const colors: Array<readonly [number, number, number]> = [];
+      for (let row = 0; row < 8; row++) {
+        for (let column = 0; column < 8; column++) {
+          const distance = row + column;
+          const [r, g, b] = hueToRgb((distance / maxDistance) * 360 - phase);
+          colors.push([Math.round(r * brightness), Math.round(g * brightness), Math.round(b * brightness)]);
+        }
+      }
+      this.setBloopPadLeds(colors);
+
+      if (frameIndex < totalFrames) {
+        frameIndex++;
+        phase += degreesPerFrame;
+        setTimeout(frame, frameDelayMs);
+        return;
+      }
+      this.setBloopPadLeds(Array.from({ length: 64 }, () => [0, 0, 0] as const));
+      this.events.onBloopPadConnected?.();
+    };
+    frame();
+  }
+
+  /** Send one or more <led><r><g><b> patterns to the given output in a single SysEx message. */
+  private sendRgbSysex(output: MIDIOutput | null, entries: LedRgbEntry[], label: string): void {
+    if (!output || entries.length === 0) return;
+    const saturated: LedRgbEntry[] = entries.map(([index, r, g, b]) => [index, ...saturateRgb(r, g, b)]);
+    const message = [
+      SYSEX_START,
+      ...SYSEX_MANUFACTURER,
+      ...saturated.flatMap(([index, r, g, b]) => [index, toSysexColorByte(r), toSysexColorByte(g), toSysexColorByte(b)]),
+      SYSEX_END,
+    ];
+    output.send(message);
+    if (this.debug) {
+      const summary = saturated.map(([index, r, g, b]) => `${index}:rgb(${r},${g},${b})`).join(" ");
+      console.log(`%c[MIDI →]%c ${label} sysex ${entries.length} led(s): ${summary}`, "color:#ffad64;font-weight:bold", "color:inherit");
+    }
+  }
 }
